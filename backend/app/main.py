@@ -15,6 +15,7 @@ from fastapi import (
     File,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -22,6 +23,7 @@ from fastapi import (
 from fastapi.background import BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
 app = FastAPI()
 
@@ -32,6 +34,10 @@ REDIS_HOST = REDIS_URL.hostname
 REDIS_PORT = REDIS_URL.port
 REDIS_PASSWORD = REDIS_URL.password
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+
+SECRET_KEY = "very-secret-key"  # TODO - externalize
+COOKIE_NAME = "user_id"
+
 
 # Initialize Redis connection on startup
 conn = None
@@ -49,6 +55,17 @@ async def startup_event():
 async def shutdown_event():
     await conn.close()
 
+
+@app.middleware("http")
+async def ensure_secure_cookie(request: Request, call_next):
+    session = request.session
+    if COOKIE_NAME not in session:
+        session[COOKIE_NAME] = str(uuid.uuid4())
+    response = await call_next(request)
+    return response
+
+
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 
 # Allow CORS for frontend
 app.add_middleware(

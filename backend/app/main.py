@@ -25,13 +25,13 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-REDIS_URL = urlparse(os.environ.get("REDIS_URL", "redis://redis"))
+REDIS_URL = urlparse(os.environ.get("REDIS_URL", "redis://redis:6379"))
 
 # Configuration via environment variables
 REDIS_HOST = REDIS_URL.hostname
 REDIS_PORT = REDIS_URL.port
 REDIS_PASSWORD = REDIS_URL.password
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 
 # Initialize Redis connection on startup
 conn = None

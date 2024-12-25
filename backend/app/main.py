@@ -85,7 +85,6 @@ class CreateLobbyRequest(BaseModel):
 
 class CreateLobbyResponse(BaseModel):
     lobby_id: str
-    creator_id: str
 
 
 class JoinLobbyRequest(BaseModel):
@@ -99,22 +98,91 @@ class ChatMessage(BaseModel):
     message: str
 
 
+active_lobbies = {}
+
+
+async def game_loop(lobby_id: str):
+    # actions_channel = f"lobby:{lobby_id}:actions"
+    # state_channel = f"lobby:{lobby_id}:state"
+    pubsub = conn.pubsub()
+    await pubsub.subscribe(f"channel:{lobby_id}")
+
+    # # Example initial game state
+    # game_state = {"timer": 30, "players": {}}
+
+    try:
+        while True:
+            # # Listen for player actions
+            while message := await pubsub.get_message(ignore_subscribe_messages=True):
+                print(message)
+
+            # if message:
+            #     action = json.loads(message["data"])
+            #     # Process player actions to update game state
+            #     if action["action"].get("type") == "update_timer":
+            #         game_state["timer"] = action["action"].get("value", game_state["timer"])
+            #     elif action["action"].get("type") == "join":
+            #         game_state["players"][action["player_id"]] = {"status": "active"}
+
+            #     # Publish updated state
+            #     await redis_client.publish(state_channel, json.dumps(game_state))
+
+            # # Example: Decrement the timer periodically
+            # game_state["timer"] -= 1
+            # if game_state["timer"] < 0:
+            #     game_state["timer"] = 0
+            #     # Optionally end the game here
+
+            # # Publish state update
+            # await redis_client.publish(state_channel, json.dumps(game_state))
+            await asyncio.sleep(1.0)  # Process state every second
+    except asyncio.CancelledError:
+        print(f"Game state processor for lobby {lobby_id} stopped.")
+
+
 @app.post("/create-lobby", response_model=CreateLobbyResponse)
-async def create_lobby(request: CreateLobbyRequest):
+async def create_lobby(create_lobby_request: CreateLobbyRequest, http_request: Request):
+    # Retrieve the session ID
+    session_id = http_request.session.get(COOKIE_NAME)
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Session ID not found")
+
+    # Check if the session is already associated with a PlayerData in a lobby
+    existing_lobby_id = await conn.get(f"session:{session_id}:lobby")
+    if existing_lobby_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Session already associated with lobby {existing_lobby_id}. Leave the lobby before creating a new one.",
+        )
+
+    # Create the new lobby
     lobby_id = uuid.uuid4().hex
-    creator_id = uuid.uuid4().hex  # Generate a unique creator ID
-    topic = request.topic
+    player_data_id = uuid.uuid4().hex  # Generate a unique PlayerData ID
+    topic = create_lobby_request.topic
 
-    # Store lobby information with the actual creator ID and topic
+    if lobby_id in active_lobbies:
+        raise HTTPException(status_code=500, detail="Error creating lobby.")
+
+    # Store lobby details
     await conn.hset(
-        f"lobby:{lobby_id}", mapping={"creator": creator_id, "topic": topic}
+        f"lobby:{lobby_id}", mapping={"topic": topic, "host": player_data_id}
     )
-    await conn.sadd(f"lobby:{lobby_id}:participants", creator_id)
-    await conn.hset(
-        f"lobby:{lobby_id}:players", creator_id, "Host"
-    )  # Name the host as "Host"
+    await conn.sadd(f"lobby:{lobby_id}:players", player_data_id)
 
-    return CreateLobbyResponse(lobby_id=lobby_id, creator_id=creator_id)
+    # Create the PlayerData associated with this session
+    await conn.hset(
+        f"player_data:{player_data_id}", mapping={"name": "Host", "is_host": 1}
+    )
+    await conn.set(f"session:{session_id}:player_data", player_data_id)
+    await conn.set(f"session:{session_id}:lobby", lobby_id)
+
+    game_state_task = asyncio.create_task(game_loop(lobby_id))
+    active_lobbies[lobby_id] = {
+        "game_state_task": game_state_task,
+        "broadcaster": None,  # Broadcaster will be initialized later during WebSocket connections
+    }
+
+    return CreateLobbyResponse(lobby_id=lobby_id)
 
 
 @app.get("/lobby/{lobby_id}", response_model=dict)
@@ -242,146 +310,161 @@ async def chat(lobby_id: str, message: ChatMessage):
     return {"detail": "Message sent"}
 
 
-import asyncio
-import json
+# async def websocket_receiver(
+#     websocket: WebSocket, lobby_id: str, user_id: str, is_game_start: asyncio.Event
+# ):
+#     channel = f"channel:{lobby_id}"
+#     try:
+#         while True:
+#             data = await websocket.receive_text()
+#             message = json.loads(data)
 
-from fastapi import WebSocket, WebSocketDisconnect
+#             if message["type"] == "start_game_initiated":
+#                 # Set the event to signal that the game is starting
+#                 is_game_start.set()
+#                 # Broadcast to all other players that the game is starting
+#                 await conn.publish(
+#                     channel, json.dumps({"type": "start_game", "initiatedByHost": True})
+#                 )
+#                 return
+
+#             elif message["type"] == "transitioning_to_game":
+#                 # Set the event indicating the user is intentionally transitioning to the game
+#                 is_game_start.set()
+#                 return
+
+#             elif message["type"] == "chat_message":
+#                 # Broadcast the chat message to all players in the lobby
+#                 player_name = message.get("playerName")
+#                 chat_message = message.get("message")
+#                 user_id = message.get("user_id")
+
+#                 await conn.publish(
+#                     channel,
+#                     json.dumps(
+#                         {
+#                             "type": "chat_message",
+#                             "playerName": player_name,
+#                             "message": chat_message,
+#                             "user_id": user_id,
+#                         }
+#                     ),
+#                 )
+
+#     except WebSocketDisconnect:
+#         # Handle disconnect based on whether it's the host or a regular player
+#         if not is_game_start.is_set():
+#             lobby_key = f"lobby:{lobby_id}"
+#             player_name = await conn.hget(f"{lobby_key}:players", user_id)
+#             creator_id = await conn.hget(f"{lobby_key}", "creator")
 
 
-async def websocket_receiver(
-    websocket: WebSocket, lobby_id: str, user_id: str, is_game_start: asyncio.Event
-):
-    channel = f"channel:{lobby_id}"
-    try:
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
+#             # If the host disconnected ungracefully, close the lobby for everyone
+#             if user_id == creator_id:
+#                 await conn.publish(
+#                     f"channel:{lobby_id}",
+#                     json.dumps(
+#                         {
+#                             "type": "lobby_closed",
+#                             "message": "The host has disconnected. The lobby is closed.",
+#                         }
+#                     ),
+#                 )
+#             else:
+#                 # Broadcast player left event for non-hosts
+#                 await conn.publish(
+#                     f"channel:{lobby_id}",
+#                     json.dumps({"type": "player_left", "playerName": player_name}),
+#                 )
+class PlayerJoinData(BaseModel):
+    name: str
 
-            if message["type"] == "start_game_initiated":
-                # Set the event to signal that the game is starting
-                is_game_start.set()
-                # Broadcast to all other players that the game is starting
-                await conn.publish(
-                    channel, json.dumps({"type": "start_game", "initiatedByHost": True})
-                )
-                return
 
-            elif message["type"] == "transitioning_to_game":
-                # Set the event indicating the user is intentionally transitioning to the game
-                is_game_start.set()
-                return
-
-            elif message["type"] == "chat_message":
-                # Broadcast the chat message to all players in the lobby
-                player_name = message.get("playerName")
-                chat_message = message.get("message")
-                user_id = message.get("user_id")
-
-                await conn.publish(
-                    channel,
-                    json.dumps(
-                        {
-                            "type": "chat_message",
-                            "playerName": player_name,
-                            "message": chat_message,
-                            "user_id": user_id,
-                        }
-                    ),
-                )
-
-    except WebSocketDisconnect:
-        # Handle disconnect based on whether it's the host or a regular player
-        if not is_game_start.is_set():
-            lobby_key = f"lobby:{lobby_id}"
-            player_name = await conn.hget(f"{lobby_key}:players", user_id)
-            creator_id = await conn.hget(f"{lobby_key}", "creator")
-
-            # If the host disconnected ungracefully, close the lobby for everyone
-            if user_id == creator_id:
-                await conn.publish(
-                    f"channel:{lobby_id}",
-                    json.dumps(
-                        {
-                            "type": "lobby_closed",
-                            "message": "The host has disconnected. The lobby is closed.",
-                        }
-                    ),
-                )
-            else:
-                # Broadcast player left event for non-hosts
-                await conn.publish(
-                    f"channel:{lobby_id}",
-                    json.dumps({"type": "player_left", "playerName": player_name}),
-                )
+class Message(BaseModel):
+    type: str
+    data: PlayerJoinData
 
 
 @app.websocket("/ws/{lobby_id}")
 async def websocket_endpoint(websocket: WebSocket, lobby_id: str):
+    # Create Pub/Sub connection and subscribe to the lobby channel
     await websocket.accept()
 
-    # Extract 'user_id' from query parameters
-    user_id = websocket.query_params.get("user_id")
-    if not user_id:
-        await websocket.close(code=1008, reason="Missing user_id")
-        return
+    while True:
+        # the basics of the loop:
+        # 1 - receive raw data from client
+        # 2 - validate that this is a valid message
+        # 3 - inform the master loop via pub/sub or exit or whatever is the appropriate action
 
-    # Validate lobby_id format
-    if not LOBBY_ID_REGEX.match(lobby_id):
-        await websocket.close(code=1008, reason="Invalid lobby ID format")
-        return
+        json_data = await websocket.receive_text()
+        message = Message.model_validate_json(
+            json_data
+        )  # TODO - replace with general validator service(?)
+        await conn.publish(f"channel:{lobby_id}", message.model_dump_json())
 
-    lobby_key = f"lobby:{lobby_id}"
+    # # Extract 'user_id' from query parameters
+    # user_id = websocket.query_params.get("user_id")
+    # if not user_id:
+    #     await websocket.close(code=1008, reason="Missing user_id")
+    #     return
 
-    # Check if the lobby still exists before accepting the connection
-    if not await conn.exists(lobby_key):
-        await websocket.close(code=1008, reason="Lobby does not exist")
-        return
+    # # Validate lobby_id format
+    # if not LOBBY_ID_REGEX.match(lobby_id):
+    #     await websocket.close(code=1008, reason="Invalid lobby ID format")
+    #     return
+
+    # lobby_key = f"lobby:{lobby_id}"
+
+    # # Check if the lobby still exists before accepting the connection
+    # if not await conn.exists(lobby_key):
+    #     await websocket.close(code=1008, reason="Lobby does not exist")
+    #     return
 
     # Create Pub/Sub connection and subscribe to the lobby channel
-    pubsub_conn = redis.Redis(
-        host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
-    )
-    pubsub = pubsub_conn.pubsub()
-    await pubsub.subscribe(f"channel:{lobby_id}")
+    # pubsub_conn = redis.Redis(
+    #     host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True
+    # )
+    # pubsub = pubsub_conn.pubsub()
+    # await pubsub.subscribe(f"channel:{lobby_id}")
 
-    # Create an asyncio Event to track if the game is starting
-    is_game_start = asyncio.Event()
+    # # Create an asyncio Event to track if the game is starting
+    # is_game_start = asyncio.Event()
 
-    async def send_messages():
-        async for message in pubsub.listen():
-            if message["type"] == "message":
-                await websocket.send_text(message["data"])
+    # async def send_messages():
+    #     async for message in pubsub.listen():
+    #         if message["type"] == "message":
+    #             await websocket.send_text(message["data"])
 
-    receive_task = asyncio.create_task(
-        websocket_receiver(websocket, lobby_id, user_id, is_game_start)
-    )
-    send_task = asyncio.create_task(send_messages())
+    # receive_task = asyncio.create_task(
+    #     websocket_receiver(websocket, lobby_id, user_id, is_game_start)
+    # )
+    # send_task = asyncio.create_task(send_messages())
 
-    done, pending = await asyncio.wait(
-        [receive_task, send_task],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    for task in pending:
-        task.cancel()
+    # done, pending = await asyncio.wait(
+    #     [receive_task, send_task],
+    #     return_when=asyncio.FIRST_COMPLETED,
+    # )
+    # for task in pending:
+    #     task.cancel()
 
-    # If the game is starting, add a small delay to ensure smooth transition
-    if is_game_start.is_set():
-        await asyncio.sleep(2)  # 2-second delay to allow for game transition
+    # # If the game is starting, add a small delay to ensure smooth transition
+    # if is_game_start.is_set():
+    #     await asyncio.sleep(2)  # 2-second delay to allow for game transition
 
-    # Clean up on disconnect
-    await pubsub.unsubscribe(f"channel:{lobby_id}")
-    await pubsub.close()
-    await pubsub_conn.close()
+    # # Clean up on disconnect
+    # await pubsub.unsubscribe(f"channel:{lobby_id}")
+    # await pubsub.close()
+    # await pubsub_conn.close()
 
-    # Only remove from participants if the user was not transitioning to the game
-    if not is_game_start.is_set():
-        await conn.srem(f"{lobby_key}:participants", user_id)
+    # # Only remove from participants if the user was not transitioning to the game
+    # if not is_game_start.is_set():
+    #     await conn.srem(f"{lobby_key}:participants", user_id)
 
-        # Additional step: If the disconnecting user is the host, delete the lobby
-        creator_id = await conn.hget(lobby_key, "creator_id")
-        if user_id == creator_id:
-            # Mark the lobby as closed to prevent reconnections
-            await conn.delete(lobby_key)
+    #     # Additional step: If the disconnecting user is the host, delete the lobby
+    #     creator_id = await conn.hget(lobby_key, "creator_id")
+    #     if user_id == creator_id:
+    #         # Mark the lobby as closed to prevent reconnections
+    #         await conn.delete(lobby_key)
 
 
 # @app.get("/rounds", response_model=Rounds)

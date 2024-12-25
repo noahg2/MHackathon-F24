@@ -24,13 +24,8 @@ const TopicUpload = () => {
     try {
       // Create a lobby with the provided topic
       const response = await instance.post("/create-lobby", { topic });
-
-      const { lobby_id, creator_id } = response.data;
-
-      // Store user information (creator_id) in localStorage for identification
-      localStorage.setItem("user_id", creator_id);
-      localStorage.setItem("lobby_id", lobby_id);
-
+      const { lobby_id} = response.data;
+      
       // Navigate to PlayerTable with the lobbyId
       navigate(`/playertable/${lobby_id}`);
     } catch (error) {

@@ -10,7 +10,7 @@ import { useEffect, useRef } from "react";
  *
  * @returns {function} sendMessage - Function to send messages through the WebSocket.
  */
-function useWebSocket(lobbyId, userId, onMessageReceived) {
+function useWebSocket(lobbyId, onMessageReceived) {
   const ws = useRef(null);
   const messageHandlerRef = useRef(onMessageReceived);
 
@@ -19,13 +19,13 @@ function useWebSocket(lobbyId, userId, onMessageReceived) {
   }, [onMessageReceived]);
 
   useEffect(() => {
-    if (!lobbyId || !userId) return;
+    if (!lobbyId) return;
 
     // Determine the WebSocket protocol
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const websocketUrl = import.meta.env.VITE_APP_WEBSOCKET_URL;
+    const websocketUrl = import.meta.env.VITE_APP_WEBSOCKET_URL || "localhost:8000";
 
-    const wsUrl = `${protocol}://${websocketUrl}/ws/${lobbyId}?user_id=${userId}`;
+    const wsUrl = `${protocol}://${websocketUrl}/ws/${lobbyId}`;
 
     ws.current = new WebSocket(wsUrl);
 
@@ -56,7 +56,7 @@ function useWebSocket(lobbyId, userId, onMessageReceived) {
         ws.current.close();
       }
     };
-  }, [lobbyId, userId]);
+  }, [lobbyId]);
 
   const sendMessage = (message) => {
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {

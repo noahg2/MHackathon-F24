@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { v4 as uuidv4 } from "uuid";
 import useWebSocket from "../hooks/useWebSocket";
-import instance from "../network/api";
 
 function PlayerTable() {
   const { lobbyId } = useParams();
@@ -16,40 +14,40 @@ function PlayerTable() {
     Boolean(localStorage.getItem("player_name"))
   );
   const [inviteLink, setInviteLink] = useState("");
-  const [userId, setUserId] = useState(localStorage.getItem("user_id") || null);
+  const [userId, setUserId] = useState(localStorage.getItem("user_id") || "default");
   const isGameStarting = useRef(false); // Track if the game is starting
 
   useEffect(() => {
-    const checkHostAndFetchPlayers = async () => {
-      try {
-        const response = await instance.get(`/lobby/${lobbyId}`);
-        const { creator_id } = response.data;
+    // const checkHostAndFetchPlayers = async () => {
+    //   try {
+    //     const response = await instance.get(`/lobby/${lobbyId}`);
+    //     const { creator_id } = response.data;
 
-        let storedUserId = localStorage.getItem("user_id");
-        if (!storedUserId) {
-          storedUserId = uuidv4();
-          localStorage.setItem("user_id", storedUserId);
-        }
-        setUserId(storedUserId);
+    //     let storedUserId = localStorage.getItem("user_id");
+    //     if (!storedUserId) {
+    //       storedUserId = uuidv4();
+    //       localStorage.setItem("user_id", storedUserId);
+    //     }
+    //     setUserId(storedUserId);
 
-        if (creator_id === storedUserId) {
-          localStorage.setItem("player_name", "Host");
-          setPlayerName("Host");
-          setIsHost(true);
-        }
+    //     if (creator_id === storedUserId) {
+    //       localStorage.setItem("player_name", "Host");
+    //       setPlayerName("Host");
+    //       setIsHost(true);
+    //     }
 
-        const participantsResponse = await instance.get(
-          `/lobby/${lobbyId}/participants`
-        );
-        setPlayers(participantsResponse.data.players);
-      } catch (error) {
-        console.error("Error fetching lobby details:", error);
-        alert("Failed to fetch lobby details. Please ensure the lobby exists.");
-        navigate("/"); // Redirect to home screen after showing the alert
-      }
-    };
+    //     const participantsResponse = await instance.get(
+    //       `/lobby/${lobbyId}/participants`
+    //     );
+    //     setPlayers(participantsResponse.data.players);
+    //   } catch (error) {
+    //     console.error("Error fetching lobby details:", error);
+    //     alert("Failed to fetch lobby details. Please ensure the lobby exists.");
+    //     navigate("/"); // Redirect to home screen after showing the alert
+    //   }
+    // };
 
-    checkHostAndFetchPlayers();
+    // checkHostAndFetchPlayers();
     const currentLink = `${window.location.origin}/playertable/${lobbyId}`;
     setInviteLink(currentLink);
   }, [lobbyId, navigate]);
@@ -95,7 +93,7 @@ function PlayerTable() {
     [navigate, lobbyId]
   );
 
-  const sendMessage = useWebSocket(lobbyId, userId, handleIncomingMessage);
+  const sendMessage = useWebSocket(lobbyId, handleIncomingMessage);
 
   const handleJoinLobby = async () => {
     if (!playerName.trim()) {
@@ -103,17 +101,12 @@ function PlayerTable() {
       return;
     }
 
-    try {
-      await instance.post(`/lobby/${lobbyId}/join`, {
-        user_id: userId,
-        player_name: playerName,
-      });
-      setNameEntered(true);
-      localStorage.setItem("player_name", playerName); // Store player name in localStorage
-    } catch (error) {
-      console.error("Error joining lobby:", error);
-      alert("An unexpected error occurred. Please try again.");
-    }
+    sendMessage(JSON.stringify({
+      "type": "PlayerJoin",
+      "data": {
+        "name": playerName,
+      }
+    }));
   };
 
   const handleStartGame = () => {
